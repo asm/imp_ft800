@@ -250,6 +250,7 @@ const BILINEAR             = 1;
 const BITMAPS              = 1;
 const BORDER               = 0;
 
+// Configurable Screen Settings
 const FT_DispWidth         = 320;
 const FT_DispHeight        = 240;
 const FT_DispHCycle        = 408;

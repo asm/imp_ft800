@@ -1,5 +1,7 @@
 Electric Imp FT800 Library
 ==========================
+![Electric Imp + FT800](https://pbs.twimg.com/media/BcJL-onCcAA4hoD.jpg)
+
 The [Embedded Video Engine (EVE)](http://www.ftdichip.com/EVE.htm) chip is an excellent embedded display, touchscreen, and audio controller from FTDI.
 
 This library is a partial [Elecric Imp](http://electricimp.com) port of the [sample app available in C]( http://www.ftdichip.com/Products/Modules/VM800C.html) from FTDI.  The code in device.nut assumes you're using part [#VM800C35A-D](http://apple.clickandbuild.com/cnb/shop/ftdichip?op=catalogue-products-null&prodCategoryID=200&title=VM800C+-+3.5) - the credit card module with 3.5" TFT + touchscreen display.  

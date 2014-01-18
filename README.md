@@ -9,6 +9,9 @@ This library is a partial [Elecric Imp](http://electricimp.com) port of the [sam
 ## Getting Started
 Simply copy device.nut into your IDE's device pane.  At the moment there is no agent code necessary.  This demo board exposes an SPI interface and you'll find the pinout at the top of device.nut.  The PD pin is optional and must be wired high if not connected to the Imp.  If you're using a different demo board or screen, you'll need to adjust the values of the last section of constants labeled "Configurable screen settings."
 
+## Examples
+See the examples directory for examples of how to use this library.  To get your imagination rolling, here is a [video](http://www.youtube.com/watch?v=HQfbOWwua6g) of the ANSI art scroller.
+
 ## Contributing
 I've clearly left a large part of the libary missing.  If you end up porting another chunk, I'd love to include your work.  Simply fork this repo and submit a push request.  Thanks!
 

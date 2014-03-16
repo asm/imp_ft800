@@ -325,17 +325,6 @@ class FT800 {
             
             if (touch_callback)
                 touch_callback();
-            /*
-            if (tag_callbacks[tag]) {
-                tag_callbacks[tag]();
-            } else if (any_touch_callback && touch_pressure < 0x7fff) {
-                any_touch_callback();
-                if (clear_any_touch_callback) {
-                    any_touch_callback = null;
-                    clear_any_touch_callback = null;
-                }
-            }  
-            */
         }
         
         // give a moment for the touch to release (not unlike debouncing a switch!)

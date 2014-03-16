@@ -1,28 +1,37 @@
-const BIN_URL     = "http://asm.dj/blocktronics_acid_trip.bin";
-//const BIN_URL     = "http://asm.dj/skynet.bin";
 const BUFFER_SIZE = 32;
 const COLUMNS     = 80;
 
+urls     <- [
+    "http://asm.dj/blocktronics_acid_trip.bin",
+    "http://asm.dj/skynet.bin",
+];
+url_ptr  <- 0;
 data     <- null;
 data_end <- null;
 pos      <- 0;
 
-function fetch_bin (url) {
-  local request = http.get(url, {});
+function fetch_bin () {
+  local request = http.get(urls[url_ptr], {});
   local response = request.sendsync();
-  return response.body;
+  data = response.body;
+  data_end = COLUMNS * 2 * (math.floor(math.abs(data.len() / (COLUMNS * 2))));
 }
 
 device.on("fetch", function(nop) {
     if (data == null) {
-        data = fetch_bin(BIN_URL);
-        data_end = COLUMNS * 2 * (math.floor(math.abs(data.len() / (COLUMNS * 2))));
+        // Cache miss, fetch a new bin
+        fetch_bin();
         send_bin();
-        server.log("sent fresh bin");
     } else {
+        // No need to fetch, just send the cached bin
         send_bin()
-        server.log("sent cached bin");
     }
+});
+
+device.on("touched", function(nop) {
+    pos = 0;
+    url_ptr = (url_ptr + 1) % urls.len();
+    fetch_bin();
 });
 
 function send_bin() {

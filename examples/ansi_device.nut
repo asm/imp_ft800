@@ -1,16 +1,16 @@
 /* Pin out -
 Imp pin -> FT800 pin
-      2 -> MISO
-      5 -> SCLK
-      7 -> MOSI
-      8 -> CS
-      9 -> PD
+      1 -> SCLK
+      2 -> PD
+      5 -> INT
+      7 -> CS
+      8 -> MOSI
+      9 -> MISO
 */
 
 // background (4bits) + forground (4bits) + char (1byte)
 // http://en.wikipedia.org/wiki/List_of_monochrome_and_RGB_palettes#4-bit_RGBI
 // see https://github.com/ByteProject/AnsiLove-C/blob/master/ansilove/ansilove.c for an implementation of how to read .ans and .bin
-// You also can use PabloDraw to conver .ans file to .bin.
 
 const RAM_CMD              = 1081344;
 const RAM_DL               = 1048576;
@@ -269,297 +269,385 @@ const FT_DispPCLK          = 8;
 const FT_DispSwizzle       = 2;
 const FT_DispPCLKPol       = 0;
 
-ram_ptr <- 0;
-debug <- 0;
+class FT800 {
+    ram_ptr = 0;
+    debug   = 0;
+    
+    spi     = null;
+    cs_pin  = null;
+    pd_pin  = null;
+    int_pin = null;
+    
+    touch_callback = null;
+    
+    function constructor(_config) {
+        spi     = _config.spi
+        cs_pin  = _config.cs_pin;
+        pd_pin  = _config.pd_pin;
+        int_pin = _config.int_pin;
+        
+        if ("touch_callback" in _config)
+            touch_callback = _config.touch_callback;
+        
+        cs_pin.configure(DIGITAL_OUT);
+        pd_pin.configure(DIGITAL_OUT);
 
-cs_pin <- hardware.pin8;
-cs_pin.configure(DIGITAL_OUT);
-cs_pin.write(0);
+        cs_pin.write(1);
+        
+        // Configure SPI @ 4Mhz and set up the interrupt handler
+        spi.configure(CLOCK_IDLE_LOW | MSB_FIRST, 15000);
+        int_pin.configure(DIGITAL_IN, int_handler.bindenv(this));
 
-pd_pin <- hardware.pin9;
-pd_pin.configure(DIGITAL_OUT);
-
-// Configure SPI @ 4Mhz
-spi <- hardware.spi257
-spi.configure(CLOCK_IDLE_LOW | MSB_FIRST, 4000);
-
-function spi_write(byte) {
-    spi.write(format("%c", byte));
-    if (debug > 0) {
-        server.log("wrote " + byte);
+        // Power cycle to be safe
+        server.log("Power cycling");
+        gpu_power_down();
+        gpu_power_up();
+        gpu_init();
+        gpu_config();
     }
-}
-
-function clear_color_rgb(red,green,blue) {
-    return (2<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
-}
-
-function color_rgb(red, green, blue) {
-    return (4<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
-}
-
-function color_a(alpha) {
-    return (16<<24)|(((alpha)&255)<<0);
-}
-
-function clear(c, s, t) {
-    return (38<<24)|(((c)&1)<<2)|(((s)&1)<<1)|(((t)&1)<<0);
-}
-
-function line_width(width) {
-    return (14<<24)|(((width)&4095)<<0);
-}
-
-function begin(prim) {
-    return (31<<24)|(((prim)&15)<<0);
-}
-
-function end() {
-    return (33<<24);
-}
-
-function vertex2f(x, y) {
-    return (1<<30)|(((x)&32767)<<15)|(((y)&32767)<<0);
-}
-
-function vertex2ii(x, y, handle, cell) {
-    return (2<<30)|(((x)&511)<<21)|(((y)&511)<<12)|(((handle)&31)<<7)|(((cell)&127)<<0);
-}
-
-function point_size(size) {
-    return (13<<24)|(((size)&8191)<<0);
-}
-
-function bitmap_source(addr) {
-    return (1<<24)|(((addr)&1048575)<<0);
-}
-
-function bitmap_layout(format, linestride, height) {
-    return (7<<24)|(((format)&31)<<19)|(((linestride)&1023)<<9)|(((height)&511)<<0);
-}
-
-function bitmap_size(filter, wrapx, wrapy, width, height) {
-    return (8<<24)|(((filter)&1)<<20)|(((wrapx)&1)<<19)|(((wrapy)&1)<<18)|(((width)&511)<<9)|(((height)&511)<<0);
-}
-
-function bitmap_transform_a(a) {
-    return (21<<24)|(((a)&131071)<<0);
-}
-
-function bitmap_transform_e(e) {
-    return (25<<24)|(((e)&131071)<<0);
-}
-
-function blend_func(src, dst) {
-    return (11<<24)|(((src)&7)<<3)|(((dst)&7)<<0);
-}
-
-function gpu_power_down() {
-    pd_pin.write(0);
-    imp.sleep(0.5);
-}
-
-function gpu_power_up() {
-    pd_pin.write(1);
-    imp.sleep(0.2);
-}
-
-function gpu_host_cmd(cmd) {
-    cs_pin.write(0);
-    spi_write(cmd);
-    spi_write(0);
-    spi_write(0);
-    cs_pin.write(1);
-}
-
-function gpu_write_mem(addr, byte_array) {
-    gpu_write_start(addr);
     
-    foreach (i, byte in byte_array) {
-        spi_write(byte);
-    }
-    cs_pin.write(1);
-}
-
-function gpu_write_blob(addr, data) {
-    gpu_write_start(addr);
-    
-    foreach (i, byte in data) {
-        spi_write(byte);
-    }
-    cs_pin.write(1);
-}
-
-function gpu_write_start(addr) {
-    cs_pin.write(0);
-    spi_write(0x80 | (addr >> 16));
-    spi_write((addr >> 8) & 0xff);
-    spi_write(addr & 0xff);
-}
-
-function gpu_write_end() {
-    cs_pin.write(1);
-}
-
-function gpu_write_mem8(addr, byte) {
-    gpu_write_start(addr);
-    spi_write(byte);
-    cs_pin.write(1);
-}
-
-function gpu_write_mem16(addr, int) {
-    gpu_write_start(addr);
-    spi_write(int & 0xff);
-    spi_write((int >> 8) & 0xff);
-    cs_pin.write(1);
-}
-
-function gpu_write_mem32(addr, int) {
-    gpu_write_start(addr);
-    spi_write(int & 0xff);
-    spi_write((int >> 8) & 0xff);
-    spi_write((int >> 16) & 0xff);
-    spi_write((int >> 24) & 0xff);  
-    cs_pin.write(1);
-}
-
-function gpu_read_mem(addr, len) {
-    cs_pin.write(0);
-    spi_write((addr >> 16) & 0xff);
-    spi_write((addr >> 8) & 0xff);
-    spi_write(addr & 0xff);
-    spi_write(0);
-    local ret = spi.readblob(len);
-    cs_pin.write(1);
-    
-    return ret;
-}
-
-function gpu_dlswap(swap_type) {
-    gpu_write_mem8(REG_DLSWAP, swap_type);
-    
-    while (true) {
-        local swap_done = gpu_read_mem(REG_DLSWAP, 1);
-        if (swap_done[0] == DLSWAP_DONE) {
-            break;
+    function int_handler() {
+        if (int_pin.read()) {return;}
+        server.log("touched!");
+        local int_byte = gpu_read_mem(REG_INT_FLAGS, 1);
+        if (int_byte && 0x02) {
+            // The touch engine takes about 25 ms (measured experimentally :/ to load
+            // the touch coordinates into the tag registers and find the tag.
+            imp.sleep(0.025);
+            local data = gpu_read_mem(REG_TOUCH_RZ, 13);
+            
+            local touch_force = (data[1] << 8) + data[0];
+            local touch_y     = (data[5] << 8) + data[4];
+            local touch_x     = (data[7] << 8) + data[6];
+            local tag_y       = (data[9] << 8) + data[8];
+            local tag_x       = (data[11] << 8) + data[10];
+            local tag         = data[12];
+            
+            if (touch_callback)
+                touch_callback();
+            /*
+            if (tag_callbacks[tag]) {
+                tag_callbacks[tag]();
+            } else if (any_touch_callback && touch_pressure < 0x7fff) {
+                any_touch_callback();
+                if (clear_any_touch_callback) {
+                    any_touch_callback = null;
+                    clear_any_touch_callback = null;
+                }
+            }  
+            */
         }
         
-        imp.sleep(0.02);
-    }
-}
-
-// Make sure you set ram_ptr before using this!
-function gpu_write_ram32(int) {
-    gpu_write_mem32(ram_ptr, int);
-    ram_ptr += 4;
-}
-
-function cp_dlstart_cmd() {
-    ram_ptr = RAM_CMD;
-    gpu_write_start(RAM_CMD);
-    cp_send_cmd(CMD_DLSTART);
-}
-
-function cp_finish_cmd() {
-    gpu_write_end();
-    gpu_write_mem16(REG_CMD_WRITE, ram_ptr);
-}
-
-function cp_send_cmd(cmd) {
-    spi_write(cmd & 0xff);
-    spi_write((cmd >> 8) & 0xff);
-    spi_write((cmd >> 16) & 0xff);
-    spi_write((cmd >> 24) & 0xff);  
-    
-    ram_ptr += 4;
-}
-
-function cp_send_string(string) {
-    // For some reason it looks like we have to pad strings with actual bytes
-    local padding = "";
-    switch (string.len() % 4) {
-        case 1:
-            padding = "000";
-            break;
-        case 2:
-            padding = "00";
-            break;
-        case 3:
-            padding = "0";
-            break;
+        // give a moment for the touch to release (not unlike debouncing a switch!)
+        imp.sleep(0.2);
     }
     
-    foreach (char in (string + padding)) {
-        spi_write(char);
-        ram_ptr += 1;
+    function set_ram_ptr(_ram_ptr) {
+        ram_ptr = _ram_ptr;
     }
-    
-    // 4 byte alignment
-    ram_ptr = (ram_ptr + 3) & 0xffffffc
-}
 
-function cp_cmd_text(x, y, font, options, string) {
-    cp_send_cmd(CMD_TEXT);
-    cp_send_cmd(((y << 16) | (x & 0xffff)));
-    cp_send_cmd(((options << 16) | font));
-    cp_send_string(string + "\0");
-}
-
-function cp_cmd_number(x, y, font, options, n) {
-    cp_send_cmd(CMD_NUMBER);
-    cp_send_cmd(((y << 16) | (x & 0xffff)));
-    cp_send_cmd(((options << 16) | font));
-    cp_send_cmd(n);
-}
-
-function gpu_init() {
-    gpu_host_cmd(FT_GPU_EXTERNAL_OSC);
-    imp.sleep(0.2);
-    
-    gpu_host_cmd(FT_GPU_PLL_48M);
-    imp.sleep(0.2);
-    
-    gpu_host_cmd(FT_GPU_CORE_RESET);
-    gpu_host_cmd(FT_GPU_ACTIVE_M);
-    
-    while (1) {
-        local chip_id = gpu_read_mem(REG_ID, 1);
-        //server.log("waiting for GPU to boot: " + chip_id[0]);
-        if (chip_id[0] == 0x7C) {
-            server.log("GPU booted!");
-            break;
+    function spi_write(byte) {
+        spi.write(format("%c", byte));
+        if (debug > 0) {
+            server.log("wrote " + byte);
         }
     }
-}
 
-function gpu_config() {
-    gpu_write_mem16(REG_HCYCLE, FT_DispHCycle);
-    gpu_write_mem16(REG_HOFFSET, FT_DispHOffset);
-    gpu_write_mem16(REG_HSYNC0, FT_DispHSync0);
-    gpu_write_mem16(REG_HSYNC1, FT_DispHSync1);
-    gpu_write_mem16(REG_VCYCLE, FT_DispVCycle);
-    gpu_write_mem16(REG_VOFFSET, FT_DispVOffset);
-    gpu_write_mem16(REG_VSYNC0, FT_DispVSync0);
-    gpu_write_mem16(REG_VSYNC1, FT_DispVSync1);
-    gpu_write_mem8(REG_SWIZZLE, FT_DispSwizzle);
-    gpu_write_mem8(REG_PCLK_POL, FT_DispPCLKPol);
-    gpu_write_mem8(REG_PCLK, FT_DispPCLK);
-    gpu_write_mem16(REG_HSIZE, FT_DispWidth);
-    gpu_write_mem16(REG_VSIZE, FT_DispHeight);
+    function clear_color_rgb(red,green,blue) {
+        return (2<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
+    }
 
-    /*Set DISP_EN to 1*/
-    // This seems to control the audio
-    //gpu_write_mem8(REG_GPIO_DIR, 0x83); // | reg_gpio_dir[0].tointeger());
-    local reg_gpio = gpu_read_mem(REG_GPIO, 1);
-    gpu_write_mem8(REG_GPIO, 0x83 | reg_gpio[0].tointeger());
+    function color_rgb(red, green, blue) {
+        return (4<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
+    }
+
+    function color_a(alpha) {
+        return (16<<24)|(((alpha)&255)<<0);
+    }
+
+    function clear(c, s, t) {
+        return (38<<24)|(((c)&1)<<2)|(((s)&1)<<1)|(((t)&1)<<0);
+    }
+
+    function line_width(width) {
+        return (14<<24)|(((width)&4095)<<0);
+    }
     
-    /* Touch configuration - configure the resistance value to 1200 - this value is specific to customer requirement and derived by experiment */
-    gpu_write_mem16(REG_TOUCH_RZTHRESH, 1200);
-    //server.log("wrote config");
+    function begin(prim) {
+        return (31<<24)|(((prim)&15)<<0);
+    }
+    
+    function end() {
+        return (33<<24);
+    }
+    
+    function vertex2f(x, y) {
+        return (1<<30)|(((x)&32767)<<15)|(((y)&32767)<<0);
+    }
+    
+    function vertex2ii(x, y, handle, cell) {
+        return (2<<30)|(((x)&511)<<21)|(((y)&511)<<12)|(((handle)&31)<<7)|(((cell)&127)<<0);
+    }
+    
+    function point_size(size) {
+        return (13<<24)|(((size)&8191)<<0);
+    }
+    
+    function bitmap_source(addr) {
+        return (1<<24)|(((addr)&1048575)<<0);
+    }
+    
+    function bitmap_layout(format, linestride, height) {
+        return (7<<24)|(((format)&31)<<19)|(((linestride)&1023)<<9)|(((height)&511)<<0);
+    }
+    
+    function bitmap_size(filter, wrapx, wrapy, width, height) {
+        return (8<<24)|(((filter)&1)<<20)|(((wrapx)&1)<<19)|(((wrapy)&1)<<18)|(((width)&511)<<9)|(((height)&511)<<0);
+    }
+    
+    function bitmap_transform_a(a) {
+        return (21<<24)|(((a)&131071)<<0);
+    }
+    
+    function bitmap_transform_e(e) {
+        return (25<<24)|(((e)&131071)<<0);
+    }
+    
+    function blend_func(src, dst) {
+        return (11<<24)|(((src)&7)<<3)|(((dst)&7)<<0);
+    }
+
+    function gpu_power_down() {
+        pd_pin.write(0);
+        imp.sleep(0.5);
+    }
+    
+    function gpu_power_up() {
+        pd_pin.write(1);
+        imp.sleep(0.2);
+    }
+    
+    function gpu_host_cmd(cmd) {
+        cs_pin.write(0);
+        spi_write(cmd);
+        spi_write(0);
+        spi_write(0);
+        cs_pin.write(1);
+    }
+
+    function gpu_write_mem(addr, byte_array) {
+        gpu_write_start(addr);
+        
+        foreach (i, byte in byte_array) {
+            spi_write(byte);
+        }
+        cs_pin.write(1);
+    }
+
+    function gpu_write_blob(addr, data) {
+        gpu_write_start(addr);
+        
+        foreach (i, byte in data) {
+            spi_write(byte);
+        }
+        cs_pin.write(1);
+    }
+
+    function gpu_write_start(addr) {
+        cs_pin.write(0);
+        spi_write(0x80 | (addr >> 16));
+        spi_write((addr >> 8) & 0xff);
+        spi_write(addr & 0xff);
+    }
+    
+    function gpu_write_end() {
+        cs_pin.write(1);
+    }
+    
+    function gpu_write_mem8(addr, byte) {
+        gpu_write_start(addr);
+        spi_write(byte);
+        cs_pin.write(1);
+    }
+
+    function gpu_write_mem16(addr, int) {
+        gpu_write_start(addr);
+        spi_write(int & 0xff);
+        spi_write((int >> 8) & 0xff);
+        cs_pin.write(1);
+    }
+    
+    function gpu_write_mem32(addr, int) {
+        gpu_write_start(addr);
+        spi_write(int & 0xff);
+        spi_write((int >> 8) & 0xff);
+        spi_write((int >> 16) & 0xff);
+        spi_write((int >> 24) & 0xff);  
+        cs_pin.write(1);
+    }
+
+    function gpu_read_mem(addr, len) {
+        cs_pin.write(0);
+        spi_write((addr >> 16) & 0xff);
+        spi_write((addr >> 8) & 0xff);
+        spi_write(addr & 0xff);
+        spi_write(0);
+        local ret = spi.readblob(len);
+        cs_pin.write(1);
+        
+        return ret;
+    }
+
+    function gpu_dlswap(swap_type) {
+        gpu_write_mem8(REG_DLSWAP, swap_type);
+        
+        while (true) {
+            local swap_done = gpu_read_mem(REG_DLSWAP, 1);
+            if (swap_done[0] == DLSWAP_DONE) {
+                break;
+            }
+            
+            imp.sleep(0.02);
+        }
+    }
+
+    // Make sure you set ram_ptr before using this!
+    function gpu_write_ram32(int) {
+        gpu_write_mem32(ram_ptr, int);
+        ram_ptr += 4;
+    }
+    
+    function display_list(list) {
+        set_ram_ptr(RAM_DL);
+        gpu_write_start(RAM_DL);
+        
+        foreach(i in list) {
+            gpu_write_ram32(i);
+        }
+        
+        gpu_dlswap(DLSWAP_FRAME);
+    }
+
+    function cp_dlstart_cmd() {
+        ram_ptr = RAM_CMD;
+        gpu_write_start(RAM_CMD);
+        cp_send_cmd(CMD_DLSTART);
+    }
+
+    function cp_finish_cmd() {
+        gpu_write_end();
+        gpu_write_mem16(REG_CMD_WRITE, ram_ptr);
+    }
+
+    function cp_send_cmd(cmd) {
+        spi_write(cmd & 0xff);
+        spi_write((cmd >> 8) & 0xff);
+        spi_write((cmd >> 16) & 0xff);
+        spi_write((cmd >> 24) & 0xff);  
+        
+        ram_ptr += 4;
+    }
+
+    function cp_send_string(string) {
+        // For some reason it looks like we have to pad strings with actual bytes
+        local padding = "";
+        switch (string.len() % 4) {
+            case 1:
+                padding = "000";
+                break;
+            case 2:
+                padding = "00";
+                break;
+            case 3:
+                padding = "0";
+                break;
+        }
+        
+        foreach (char in (string + padding)) {
+            spi_write(char);
+            ram_ptr += 1;
+        }
+        
+        // 4 byte alignment
+        ram_ptr = (ram_ptr + 3) & 0xffffffc
+    }
+
+    function cp_cmd_text(x, y, font, options, string) {
+        cp_send_cmd(CMD_TEXT);
+        cp_send_cmd(((y << 16) | (x & 0xffff)));
+        cp_send_cmd(((options << 16) | font));
+        cp_send_string(string + "\0");
+    }
+    
+    function cp_cmd_number(x, y, font, options, n) {
+        cp_send_cmd(CMD_NUMBER);
+        cp_send_cmd(((y << 16) | (x & 0xffff)));
+        cp_send_cmd(((options << 16) | font));
+        cp_send_cmd(n);
+    }
+
+    function gpu_init() {
+        gpu_host_cmd(FT_GPU_EXTERNAL_OSC);
+        imp.sleep(0.2);
+        
+        gpu_host_cmd(FT_GPU_PLL_48M);
+        imp.sleep(0.2);
+        
+        gpu_host_cmd(FT_GPU_CORE_RESET);
+        gpu_host_cmd(FT_GPU_ACTIVE_M);
+        
+        while (1) {
+            local chip_id = gpu_read_mem(REG_ID, 1);
+            //server.log("waiting for GPU to boot: " + chip_id[0]);
+            if (chip_id[0] == 0x7C) {
+                server.log("GPU booted!");
+                break;
+            }
+        }
+    }
+
+    function gpu_config() {
+        gpu_write_mem16(REG_HCYCLE, FT_DispHCycle);
+        gpu_write_mem16(REG_HOFFSET, FT_DispHOffset);
+        gpu_write_mem16(REG_HSYNC0, FT_DispHSync0);
+        gpu_write_mem16(REG_HSYNC1, FT_DispHSync1);
+        gpu_write_mem16(REG_VCYCLE, FT_DispVCycle);
+        gpu_write_mem16(REG_VOFFSET, FT_DispVOffset);
+        gpu_write_mem16(REG_VSYNC0, FT_DispVSync0);
+        gpu_write_mem16(REG_VSYNC1, FT_DispVSync1);
+        gpu_write_mem8(REG_SWIZZLE, FT_DispSwizzle);
+        gpu_write_mem8(REG_PCLK_POL, FT_DispPCLKPol);
+        gpu_write_mem8(REG_PCLK, FT_DispPCLK);
+        gpu_write_mem16(REG_HSIZE, FT_DispWidth);
+        gpu_write_mem16(REG_VSIZE, FT_DispHeight);
+    
+        // This seems to control the audio
+        //gpu_write_mem8(REG_GPIO_DIR, 0x83); // | reg_gpio_dir[0].tointeger());
+        local reg_gpio = gpu_read_mem(REG_GPIO, 1);
+        gpu_write_mem8(REG_GPIO, 0x83 | reg_gpio[0].tointeger());
+        
+        // Touch configuration - configure the resistance value to 1200 - this value is specific to customer requirement and derived by experiment
+        gpu_write_mem16(REG_TOUCH_RZTHRESH, 1200);
+        
+        // enable touch interrupts (all sources enabled by default)
+        gpu_write_mem8(REG_INT_EN, 0x01);
+
+        // enable interrupts on touch events only
+        gpu_write_mem8(REG_INT_MASK, 0x02);
+        
+        // dummy read to clear the registers on boot
+        gpu_read_mem(REG_INT_FLAGS, 1);
+        
+        // Backlight - values are 0 - 128 (128 = max)
+        //gpu_write_mem8(REG_PWM_DUTY, 10);
+        
+        //server.log("wrote config");
+    }
 }
 
 // Simple progress display to let everyone know we're busy loading stuff
 class LoadingText {
+    ft800 = null;
     spinner_pos = 0;
     spinner = ['|', '/', '-', '\\'].map(function (a) {
         return a.tointeger();
@@ -570,38 +658,33 @@ class LoadingText {
         0x4c, 0x0f, 0x6f, 0x0f, 0x61, 0x0f, 0x64, 0x0f, 0x69, 0x0f, 0x6e, 0x0f, 0x67, 0x0f, 0x0, 0x0, 0x0, 0x0f, 0x0, 0x0,
     ];
     
-    function constructor(_callback) {
+    function constructor(_ft800, _callback) {
+        ft800 = _ft800;
         callback = _callback;
-        gpu_write_mem(RAM_G, loading_text);
+        ft800.gpu_write_mem(RAM_G, loading_text);
     }
 
     function show() {
         if (callback.call(this))
             return;
 
-      gpu_write_mem8(RAM_G + 16, spinner[spinner_pos % 4]);
+      ft800.gpu_write_mem8(RAM_G + 16, spinner[spinner_pos % 4]);
         spinner_pos += 1;
 
-        ram_ptr = RAM_DL;
-        gpu_write_start(RAM_DL);
-    
-        gpu_write_ram32(clear_color_rgb(0,0,0));  // black the screen out
-      gpu_write_ram32(clear(1, 1, 1));          // clear screen
-      gpu_write_ram32(bitmap_source(RAM_G));
-    
-      // mandatory for textvga as background color is also one of the parameter in textvga format
-      gpu_write_ram32(blend_func(ONE, ZERO));
-        
-      gpu_write_ram32(bitmap_layout(TEXTVGA, 2*16, 8));                 // L1 format but each datatype is 16bit size
-      gpu_write_ram32(bitmap_size(NEAREST, BORDER, BORDER, 8*10, 8*2)); // 8 pixels per character
-      gpu_write_ram32(begin(BITMAPS));
-      // Display textvga at hoffset, voffset location
-      gpu_write_ram32(vertex2f((FT_DispWidth/2 - 40)*16, (FT_DispHeight/2 - 8)*16));
-      gpu_write_ram32(end());
-        
-        gpu_write_ram32(0); // display the image
-    
-        gpu_dlswap(DLSWAP_FRAME);
+        ft800.display_list([
+            ft800.clear_color_rgb(0, 0, 0),  // black the screen out
+          ft800.clear(1, 1, 1),            // clear screen
+          ft800.bitmap_source(RAM_G),
+
+            // mandatory for textvga as background color is also one of the parameter in textvga format
+            ft800.blend_func(ONE, ZERO),
+            ft800.bitmap_layout(TEXTVGA, 2*16, 8),   // L1 format but each datatype is 16bit size
+            ft800.bitmap_size(NEAREST, BORDER, BORDER, 8*10, 8*2), // 8 pixels per character
+            ft800.begin(BITMAPS),
+            ft800.vertex2f((FT_DispWidth / 2 - 40) * 16, (FT_DispHeight / 2 - 8) * 16),
+            ft800.end(),
+            0,
+        ]);
         
         imp.wakeup(0.2, show.bindenv(this));
     }
@@ -609,6 +692,7 @@ class LoadingText {
 
 // Async loader to allow us to do other things while loading ram
 class Loader {
+    ft800      = null;
     pos        = 0;
     addr       = 0;
     block_size = 0;
@@ -616,12 +700,14 @@ class Loader {
     callback   = null;
     len        = 0;
     
-    function constructor(_addr, _data, _block_size, _callback) {
-        addr = _addr;
-        data = _data;
-        block_size = _block_size;
-        callback = _callback;
-        len = data.len();
+    function constructor(_ft800, _addr, _data, _block_size, _callback) {
+        ft800       = _ft800;
+        addr        = _addr;
+        data        = _data;
+        block_size  = _block_size;
+        callback    = _callback;
+        len         = data.len();
+        
         load();
     }
     
@@ -632,7 +718,7 @@ class Loader {
             if (pos + block_size > len)
                 n = pos + block_size - len;
                 
-            gpu_write_mem(addr, data.readblob(n));
+            ft800.gpu_write_mem(addr, data.readblob(n));
             addr += block_size;
             pos += block_size;
             imp.wakeup(0.01, load.bindenv(this));
@@ -646,23 +732,29 @@ class Loader {
 
 const COLUMNS        = 80;
 const SCREEN_SIZE    = 32;
-const SCROLL_SLEEP   = 0.15;
+const SCROLL_SLEEP   = 0.3;
 const BUFFER0_OFFSET = 100;
 const BUFFER1_OFFSET = 16384;
 
 class AnsiScroller {
+    ft800      = null;
     bin_len    = 0;
     buffer_ptr = 0;
     pos        = 0;
     buffer     = 0;
     loaded     = false;
     
-    function constructor() {
+    function constructor(_ft800) {
+        ft800 = _ft800;
         agent.send("fetch", 0);
     }
     
     function is_loaded() {
         return loaded;
+    }
+    
+    function unload() {
+        loaded = false;
     }
     
     function load_complete() {
@@ -676,19 +768,20 @@ class AnsiScroller {
         if (loaded) {
             // Use double buffering for smoother scrolling while loading
             if (buffer == 0) {
-                Loader(RAM_G + BUFFER0_OFFSET, packet, 100, null);
+                Loader(ft800, RAM_G + BUFFER0_OFFSET, packet, 100, null);
             } else {
-                Loader(RAM_G + BUFFER1_OFFSET, packet, 100, null);
+                Loader(ft800, RAM_G + BUFFER1_OFFSET, packet, 100, null);
             }
         } else {
             // First time load is a little different
             buffer_ptr = RAM_G + 100;
             buffer = 1;
-            Loader(RAM_G + BUFFER0_OFFSET, packet, 1000, load_complete.bindenv(this));
+            Loader(ft800, RAM_G + BUFFER0_OFFSET, packet, 1000, load_complete.bindenv(this));
         }
     }
     
     function scroll() {
+        if(!loaded) {return;}
         // Once, we're a little ways in, send the request for the next block
         if (pos == 1) {
             agent.send("fetch", 0);
@@ -708,28 +801,23 @@ class AnsiScroller {
             }
         }
         
-        ram_ptr = RAM_DL;
-        gpu_write_start(RAM_DL);
+        ft800.display_list([
+            ft800.clear_color_rgb(0, 0, 0),  // black the screen out
+            ft800.clear(1, 1, 1),            // clear screen
+            ft800.bitmap_source(buffer_ptr + (COLUMNS * 2) * pos),
     
-        gpu_write_ram32(clear_color_rgb(0,0,0));  // black the screen out
-        gpu_write_ram32(clear(1, 1, 1));          // clear screen
-      gpu_write_ram32(bitmap_source(buffer_ptr + (COLUMNS * 2)*pos));
-    
-      // mandatory for textvga as background color is also one of the parameter in textvga format
-      gpu_write_ram32(blend_func(ONE, ZERO));
-        
-      gpu_write_ram32(bitmap_layout(TEXTVGA, 16*10, 60)); // L1 format but each datatype is 16bit size
-        gpu_write_ram32(bitmap_transform_a(512));           // shrink the bitmap in both dimensions by half
-        gpu_write_ram32(bitmap_transform_e(512));
-      gpu_write_ram32(bitmap_size(BILINEAR, BORDER, BORDER, 8*SCREEN_SIZE*2, 8*SCREEN_SIZE)); // 8 pixels per character
-      gpu_write_ram32(begin(BITMAPS));
-    
-      gpu_write_ram32(vertex2f(0, 0));
-      gpu_write_ram32(end());
-        
-        gpu_write_ram32(0); // display the image
-    
-        gpu_dlswap(DLSWAP_FRAME);
+            // mandatory for textvga as background color is also one of the parameter in textvga format
+            ft800.blend_func(ONE, ZERO),
+            ft800.bitmap_layout(TEXTVGA, 16*10, 60), // L1 format but each datatype is 16bit size
+            ft800.bitmap_transform_a(512),           // shrink the bitmap in both dimensions by half
+            ft800.bitmap_transform_e(512),
+            ft800.bitmap_size(BILINEAR, BORDER, BORDER, 8*SCREEN_SIZE*2, 8*SCREEN_SIZE), // 8 pixels per character
+            ft800.begin(BITMAPS),
+            ft800.vertex2f(0, 0),
+            ft800.end(),
+            0, // display the image
+        ]);
+
         pos += 1;
         imp.wakeup(SCROLL_SLEEP, scroll.bindenv(this));
     }
@@ -739,16 +827,24 @@ agent.on("bin", function(packet) {
     scroller.handle_packet(packet);
 });
 
+function touched() {
+    agent.send("touched", 1);
+    scroller.unload();
+    scroller = AnsiScroller(ft800);
+    LoadingText(ft800, scroller.is_loaded.bindenv(scroller)).show();
+}
+
 
 /* Beginning of execution */
-cs_pin.write(1);
+imp.setpowersave(true);
 
-// Power cycle to be safe
-server.log("Power cycling");
-gpu_power_down();
-gpu_power_up();
-gpu_init();
-gpu_config();
+ft800 <- FT800({
+    spi     = hardware.spi189,
+    cs_pin  = hardware.pin7,
+    pd_pin  = hardware.pin2,
+    int_pin = hardware.pin5,
+    touch_callback = touched,
+});
 
-scroller <- AnsiScroller();
-LoadingText(scroller.is_loaded.bindenv(scroller)).show();
+scroller <- AnsiScroller(ft800);
+LoadingText(ft800, scroller.is_loaded.bindenv(scroller)).show();

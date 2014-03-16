@@ -662,8 +662,8 @@ class LoadingText {
 
         ft800.display_list([
             ft800.clear_color_rgb(0, 0, 0),  // black the screen out
-          ft800.clear(1, 1, 1),            // clear screen
-          ft800.bitmap_source(RAM_G),
+            ft800.clear(1, 1, 1),            // clear screen
+            ft800.bitmap_source(RAM_G),
 
             // mandatory for textvga as background color is also one of the parameter in textvga format
             ft800.blend_func(ONE, ZERO),

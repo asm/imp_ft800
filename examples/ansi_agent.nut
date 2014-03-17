@@ -1,9 +1,28 @@
 const BUFFER_SIZE = 32;
 const COLUMNS     = 80;
 
-urls     <- [
-    "http://asm.dj/blocktronics_acid_trip.bin",
-    "http://asm.dj/skynet.bin",
+urls <- [
+    "http://asm.dj/ansi/blocktronics_acid_trip.bin",
+    "http://asm.dj/ansi/leviathan.bin",
+    "http://asm.dj/ansi/skynet.bin",
+    "http://asm.dj/ansi/fil-font.bin",
+    "http://asm.dj/ansi/blackflag.bin",
+    "http://asm.dj/ansi/AE-CH02.bin",
+    "http://asm.dj/ansi/BE-PI1.bin",
+    "http://asm.dj/ansi/EX-AMBER.bin",
+    "http://asm.dj/ansi/GL-FLUX1.bin",
+    "http://asm.dj/ansi/HV-PORN.bin",
+    "http://asm.dj/ansi/KM-DOH.bin",
+    "http://asm.dj/ansi/KM-PROPH.bin",
+    "http://asm.dj/ansi/LD-TNW1.bin",
+    "http://asm.dj/ansi/MB-POINT.bin",
+    "http://asm.dj/ansi/RZ-FORCE.bin",
+    "http://asm.dj/ansi/S5-AOS1.bin",
+    "http://asm.dj/ansi/SO-DSUN1.bin",
+    "http://asm.dj/ansi/SO-NEO1.bin",
+    "http://asm.dj/ansi/UNS-ITCH.bin",
+    "http://asm.dj/ansi/US-SFISH.bin",
+    "http://asm.dj/ansi/VS-FED1.bin",
 ];
 url_ptr  <- 0;
 data     <- null;
@@ -18,6 +37,13 @@ function fetch_bin () {
 }
 
 device.on("fetch", function(nop) {
+    // Recall the ansi we were last displaying
+    local server_storage = server.load();
+
+    if ("ansi_url_ptr" in server_storage) {
+        url_ptr = server_storage.ansi_url_ptr;
+    }
+
     if (data == null) {
         // Cache miss, fetch a new bin
         fetch_bin();
@@ -31,6 +57,10 @@ device.on("fetch", function(nop) {
 device.on("touched", function(nop) {
     pos = 0;
     url_ptr = (url_ptr + 1) % urls.len();
+    // Update the server stored pointer
+    server.save({
+        ansi_url_ptr = url_ptr,
+    })
     fetch_bin();
 });
 

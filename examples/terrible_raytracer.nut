@@ -1,16 +1,17 @@
 /* Pin out -
 Imp pin -> FT800 pin
-      2 -> MISO
-      5 -> SCLK
-      7 -> MOSI
-      8 -> CS
-      9 -> PD
+      1 -> SCLK
+      2 -> PD
+      5 -> INT
+      7 -> CS
+      8 -> MOSI
+      9 -> MISO
 */
 
 /*
  This is heavily based on https://github.com/bwiklund/js1k-love-raytracer and
  it was my intention to make this painfully slow to watch.  It will reset
- every morning at 7am PST and spend the day generating another unique ray
+ every Monday at 7am PST and spend the week generating another unique ray
  traced heart.
 */
 
@@ -271,333 +272,411 @@ const FT_DispPCLK          = 8;
 const FT_DispSwizzle       = 2;
 const FT_DispPCLKPol       = 0;
 
-ram_ptr <- 0;
-debug <- 0;
+class FT800 {
+    ram_ptr = 0;
+    debug   = 0;
+    
+    spi     = null;
+    cs_pin  = null;
+    pd_pin  = null;
+    int_pin = null;
+    
+    touch_callback = null;
+    
+    function constructor(_config) {
+        spi     = _config.spi
+        cs_pin  = _config.cs_pin;
+        pd_pin  = _config.pd_pin;
+        int_pin = _config.int_pin;
+        
+        if ("touch_callback" in _config)
+            touch_callback = _config.touch_callback;
+        
+        cs_pin.configure(DIGITAL_OUT);
+        pd_pin.configure(DIGITAL_OUT);
 
-cs_pin <- hardware.pin8;
-cs_pin.configure(DIGITAL_OUT);
-cs_pin.write(0);
+        cs_pin.write(1);
+        
+        // Configure SPI @ 4Mhz and set up the interrupt handler
+        spi.configure(CLOCK_IDLE_LOW | MSB_FIRST, 15000);
+        int_pin.configure(DIGITAL_IN, int_handler.bindenv(this));
 
-pd_pin <- hardware.pin9;
-pd_pin.configure(DIGITAL_OUT);
-
-// Configure SPI @ 4Mhz
-spi <- hardware.spi257
-spi.configure(CLOCK_IDLE_LOW | MSB_FIRST, 15000);
-
-function spi_write(byte) {
-    spi.write(format("%c", byte));
-    if (debug > 0) {
-        server.log("wrote " + byte);
+        // Power cycle to be safe
+        server.log("Power cycling");
+        gpu_power_down();
+        gpu_power_up();
+        gpu_init();
+        gpu_config();
     }
-}
-
-function clear_color_rgb(red,green,blue) {
-    return (2<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
-}
-
-function color_rgb(red, green, blue) {
-    return (4<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
-}
-
-function color_a(alpha) {
-    return (16<<24)|(((alpha)&255)<<0);
-}
-
-function clear(c, s, t) {
-    return (38<<24)|(((c)&1)<<2)|(((s)&1)<<1)|(((t)&1)<<0);
-}
-
-function line_width(width) {
-    return (14<<24)|(((width)&4095)<<0);
-}
-
-function begin(prim) {
-    return (31<<24)|(((prim)&15)<<0);
-}
-
-function end() {
-    return (33<<24);
-}
-
-function vertex2f(x, y) {
-    return (1<<30)|(((x)&32767)<<15)|(((y)&32767)<<0);
-}
-
-function vertex2ii(x, y, handle, cell) {
-    return (2<<30)|(((x)&511)<<21)|(((y)&511)<<12)|(((handle)&31)<<7)|(((cell)&127)<<0);
-}
-
-function point_size(size) {
-    return (13<<24)|(((size)&8191)<<0);
-}
-
-function bitmap_source(addr) {
-    return (1<<24)|(((addr)&1048575)<<0);
-}
-
-function bitmap_layout(format, linestride, height) {
-    return (7<<24)|(((format)&31)<<19)|(((linestride)&1023)<<9)|(((height)&511)<<0);
-}
-
-function bitmap_size(filter, wrapx, wrapy, width, height) {
-    return (8<<24)|(((filter)&1)<<20)|(((wrapx)&1)<<19)|(((wrapy)&1)<<18)|(((width)&511)<<9)|(((height)&511)<<0);
-}
-
-function bitmap_transform_a(a) {
-    return (21<<24)|(((a)&131071)<<0);
-}
-
-function bitmap_transform_e(e) {
-    return (25<<24)|(((e)&131071)<<0);
-}
-
-function blend_func(src, dst) {
-    return (11<<24)|(((src)&7)<<3)|(((dst)&7)<<0);
-}
-
-function gpu_power_down() {
-    pd_pin.write(0);
-    imp.sleep(0.5);
-}
-
-function gpu_power_up() {
-    pd_pin.write(1);
-    imp.sleep(0.2);
-}
-
-function gpu_host_cmd(cmd) {
-    cs_pin.write(0);
-    spi_write(cmd);
-    spi_write(0);
-    spi_write(0);
-    cs_pin.write(1);
-}
-
-function gpu_write_mem(addr, byte_array) {
-    gpu_write_start(addr);
     
-    foreach (i, byte in byte_array) {
-        spi_write(byte);
-    }
-    cs_pin.write(1);
-}
-
-function gpu_write_blob(addr, data) {
-    gpu_write_start(addr);
-    
-    foreach (i, byte in data) {
-        spi_write(byte);
-    }
-    cs_pin.write(1);
-}
-
-function gpu_write_start(addr) {
-    cs_pin.write(0);
-    spi_write(0x80 | (addr >> 16));
-    spi_write((addr >> 8) & 0xff);
-    spi_write(addr & 0xff);
-}
-
-function gpu_write_end() {
-    cs_pin.write(1);
-}
-
-function gpu_write_mem8(addr, byte) {
-    gpu_write_start(addr);
-    spi_write(byte);
-    cs_pin.write(1);
-}
-
-function gpu_write_mem16(addr, int) {
-    gpu_write_start(addr);
-    spi_write(int & 0xff);
-    spi_write((int >> 8) & 0xff);
-    cs_pin.write(1);
-}
-
-function gpu_write_mem32(addr, int) {
-    gpu_write_start(addr);
-    spi_write(int & 0xff);
-    spi_write((int >> 8) & 0xff);
-    spi_write((int >> 16) & 0xff);
-    spi_write((int >> 24) & 0xff);  
-    cs_pin.write(1);
-}
-
-function gpu_read_mem(addr, len) {
-    cs_pin.write(0);
-    spi_write((addr >> 16) & 0xff);
-    spi_write((addr >> 8) & 0xff);
-    spi_write(addr & 0xff);
-    spi_write(0);
-    local ret = spi.readblob(len);
-    cs_pin.write(1);
-    
-    return ret;
-}
-
-function gpu_dlswap(swap_type) {
-    gpu_write_mem8(REG_DLSWAP, swap_type);
-    
-    while (true) {
-        local swap_done = gpu_read_mem(REG_DLSWAP, 1);
-        if (swap_done[0] == DLSWAP_DONE) {
-            break;
+    function int_handler() {
+        if (int_pin.read()) {return;}
+        server.log("touched!");
+        local int_byte = gpu_read_mem(REG_INT_FLAGS, 1);
+        if (int_byte && 0x02) {
+            // The touch engine takes about 25 ms (measured experimentally :/ to load
+            // the touch coordinates into the tag registers and find the tag.
+            imp.sleep(0.025);
+            local data = gpu_read_mem(REG_TOUCH_RZ, 13);
+            
+            local touch_force = (data[1] << 8) + data[0];
+            local touch_y     = (data[5] << 8) + data[4];
+            local touch_x     = (data[7] << 8) + data[6];
+            local tag_y       = (data[9] << 8) + data[8];
+            local tag_x       = (data[11] << 8) + data[10];
+            local tag         = data[12];
+            
+            if (touch_callback)
+                touch_callback();
         }
         
-        imp.sleep(0.02);
-    }
-}
-
-// Make sure you set ram_ptr before using this!
-function gpu_write_ram32(int) {
-    gpu_write_mem32(ram_ptr, int);
-    ram_ptr += 4;
-}
-
-function cp_dlstart_cmd() {
-    ram_ptr = RAM_CMD;
-    gpu_write_start(RAM_CMD);
-    cp_send_cmd(CMD_DLSTART);
-}
-
-function cp_finish_cmd() {
-    gpu_write_end();
-    gpu_write_mem16(REG_CMD_WRITE, ram_ptr);
-}
-
-function cp_send_cmd(cmd) {
-    spi_write(cmd & 0xff);
-    spi_write((cmd >> 8) & 0xff);
-    spi_write((cmd >> 16) & 0xff);
-    spi_write((cmd >> 24) & 0xff);  
-    
-    ram_ptr += 4;
-}
-
-function cp_send_string(string) {
-    // For some reason it looks like we have to pad strings with actual bytes
-    local padding = "";
-    switch (string.len() % 4) {
-        case 1:
-            padding = "000";
-            break;
-        case 2:
-            padding = "00";
-            break;
-        case 3:
-            padding = "0";
-            break;
+        // give a moment for the touch to release (not unlike debouncing a switch!)
+        imp.sleep(0.2);
     }
     
-    foreach (char in (string + padding)) {
-        spi_write(char);
-        ram_ptr += 1;
+    function set_ram_ptr(_ram_ptr) {
+        ram_ptr = _ram_ptr;
     }
-    
-    // 4 byte alignment
-    ram_ptr = (ram_ptr + 3) & 0xffffffc
-}
 
-function cp_cmd_text(x, y, font, options, string) {
-    cp_send_cmd(CMD_TEXT);
-    cp_send_cmd(((y << 16) | (x & 0xffff)));
-    cp_send_cmd(((options << 16) | font));
-    cp_send_string(string + "\0");
-}
-
-function cp_cmd_number(x, y, font, options, n) {
-    cp_send_cmd(CMD_NUMBER);
-    cp_send_cmd(((y << 16) | (x & 0xffff)));
-    cp_send_cmd(((options << 16) | font));
-    cp_send_cmd(n);
-}
-function cp_cmd_memzero(addr, len) {
-    cp_send_cmd(CMD_MEMZERO);
-    cp_send_cmd(addr);
-    cp_send_cmd(len);
-}
-
-function gpu_init() {
-    gpu_host_cmd(FT_GPU_EXTERNAL_OSC);
-    imp.sleep(0.2);
-    
-    gpu_host_cmd(FT_GPU_PLL_48M);
-    imp.sleep(0.2);
-    
-    gpu_host_cmd(FT_GPU_CORE_RESET);
-    gpu_host_cmd(FT_GPU_ACTIVE_M);
-    
-    while (1) {
-        local chip_id = gpu_read_mem(REG_ID, 1);
-        //server.log("waiting for GPU to boot: " + chip_id[0]);
-        if (chip_id[0] == 0x7C) {
-            server.log("GPU booted!");
-            break;
+    function spi_write(byte) {
+        spi.write(format("%c", byte));
+        if (debug > 0) {
+            server.log("wrote " + byte);
         }
     }
-}
 
-function gpu_config() {
-    gpu_write_mem16(REG_HCYCLE, FT_DispHCycle);
-    gpu_write_mem16(REG_HOFFSET, FT_DispHOffset);
-    gpu_write_mem16(REG_HSYNC0, FT_DispHSync0);
-    gpu_write_mem16(REG_HSYNC1, FT_DispHSync1);
-    gpu_write_mem16(REG_VCYCLE, FT_DispVCycle);
-    gpu_write_mem16(REG_VOFFSET, FT_DispVOffset);
-    gpu_write_mem16(REG_VSYNC0, FT_DispVSync0);
-    gpu_write_mem16(REG_VSYNC1, FT_DispVSync1);
-    gpu_write_mem8(REG_SWIZZLE, FT_DispSwizzle);
-    gpu_write_mem8(REG_PCLK_POL, FT_DispPCLKPol);
-    gpu_write_mem8(REG_PCLK, FT_DispPCLK);
-    gpu_write_mem16(REG_HSIZE, FT_DispWidth);
-    gpu_write_mem16(REG_VSIZE, FT_DispHeight);
+    function clear_color_rgb(red,green,blue) {
+        return (2<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
+    }
 
-    /*Set DISP_EN to 1*/
-    // This seems to control the audio
-    //gpu_write_mem8(REG_GPIO_DIR, 0x83); // | reg_gpio_dir[0].tointeger());
-    local reg_gpio = gpu_read_mem(REG_GPIO, 1);
-    gpu_write_mem8(REG_GPIO, 0x83 | reg_gpio[0].tointeger());
+    function color_rgb(red, green, blue) {
+        return (4<<24)|(((red)&255)<<16)|(((green)&255)<<8)|(((blue)&255)<<0);
+    }
+
+    function color_a(alpha) {
+        return (16<<24)|(((alpha)&255)<<0);
+    }
+
+    function clear(c, s, t) {
+        return (38<<24)|(((c)&1)<<2)|(((s)&1)<<1)|(((t)&1)<<0);
+    }
+
+    function line_width(width) {
+        return (14<<24)|(((width)&4095)<<0);
+    }
     
-    /* Touch configuration - configure the resistance value to 1200 - this value is specific to customer requirement and derived by experiment */
-    gpu_write_mem16(REG_TOUCH_RZTHRESH, 1200);
-    //server.log("wrote config");
+    function begin(prim) {
+        return (31<<24)|(((prim)&15)<<0);
+    }
+    
+    function end() {
+        return (33<<24);
+    }
+    
+    function vertex2f(x, y) {
+        return (1<<30)|(((x)&32767)<<15)|(((y)&32767)<<0);
+    }
+    
+    function vertex2ii(x, y, handle, cell) {
+        return (2<<30)|(((x)&511)<<21)|(((y)&511)<<12)|(((handle)&31)<<7)|(((cell)&127)<<0);
+    }
+    
+    function point_size(size) {
+        return (13<<24)|(((size)&8191)<<0);
+    }
+    
+    function bitmap_source(addr) {
+        return (1<<24)|(((addr)&1048575)<<0);
+    }
+    
+    function bitmap_layout(format, linestride, height) {
+        return (7<<24)|(((format)&31)<<19)|(((linestride)&1023)<<9)|(((height)&511)<<0);
+    }
+    
+    function bitmap_size(filter, wrapx, wrapy, width, height) {
+        return (8<<24)|(((filter)&1)<<20)|(((wrapx)&1)<<19)|(((wrapy)&1)<<18)|(((width)&511)<<9)|(((height)&511)<<0);
+    }
+    
+    function bitmap_transform_a(a) {
+        return (21<<24)|(((a)&131071)<<0);
+    }
+    
+    function bitmap_transform_e(e) {
+        return (25<<24)|(((e)&131071)<<0);
+    }
+    
+    function blend_func(src, dst) {
+        return (11<<24)|(((src)&7)<<3)|(((dst)&7)<<0);
+    }
+
+    function gpu_power_down() {
+        pd_pin.write(0);
+        imp.sleep(0.5);
+    }
+    
+    function gpu_power_up() {
+        pd_pin.write(1);
+        imp.sleep(0.2);
+    }
+    
+    function gpu_host_cmd(cmd) {
+        cs_pin.write(0);
+        spi_write(cmd);
+        spi_write(0);
+        spi_write(0);
+        cs_pin.write(1);
+    }
+
+    function gpu_write_mem(addr, byte_array) {
+        gpu_write_start(addr);
+        
+        foreach (i, byte in byte_array) {
+            spi_write(byte);
+        }
+        cs_pin.write(1);
+    }
+
+    function gpu_write_blob(addr, data) {
+        gpu_write_start(addr);
+        
+        foreach (i, byte in data) {
+            spi_write(byte);
+        }
+        cs_pin.write(1);
+    }
+
+    function gpu_write_start(addr) {
+        cs_pin.write(0);
+        spi_write(0x80 | (addr >> 16));
+        spi_write((addr >> 8) & 0xff);
+        spi_write(addr & 0xff);
+    }
+    
+    function gpu_write_end() {
+        cs_pin.write(1);
+    }
+    
+    function gpu_write_mem8(addr, byte) {
+        gpu_write_start(addr);
+        spi_write(byte);
+        cs_pin.write(1);
+    }
+
+    function gpu_write_mem16(addr, int) {
+        gpu_write_start(addr);
+        spi_write(int & 0xff);
+        spi_write((int >> 8) & 0xff);
+        cs_pin.write(1);
+    }
+    
+    function gpu_write_mem32(addr, int) {
+        gpu_write_start(addr);
+        spi_write(int & 0xff);
+        spi_write((int >> 8) & 0xff);
+        spi_write((int >> 16) & 0xff);
+        spi_write((int >> 24) & 0xff);  
+        cs_pin.write(1);
+    }
+
+    function gpu_read_mem(addr, len) {
+        cs_pin.write(0);
+        spi_write((addr >> 16) & 0xff);
+        spi_write((addr >> 8) & 0xff);
+        spi_write(addr & 0xff);
+        spi_write(0);
+        local ret = spi.readblob(len);
+        cs_pin.write(1);
+        
+        return ret;
+    }
+
+    function gpu_dlswap(swap_type) {
+        gpu_write_mem8(REG_DLSWAP, swap_type);
+        
+        while (true) {
+            local swap_done = gpu_read_mem(REG_DLSWAP, 1);
+            if (swap_done[0] == DLSWAP_DONE) {
+                break;
+            }
+            
+            imp.sleep(0.02);
+        }
+    }
+
+    // Make sure you set ram_ptr before using this!
+    function gpu_write_ram32(int) {
+        gpu_write_mem32(ram_ptr, int);
+        ram_ptr += 4;
+    }
+    
+    function display_list(list) {
+        set_ram_ptr(RAM_DL);
+        gpu_write_start(RAM_DL);
+        
+        foreach(i in list) {
+            gpu_write_ram32(i);
+        }
+        
+        gpu_dlswap(DLSWAP_FRAME);
+    }
+
+    function cp_dlstart_cmd() {
+        ram_ptr = RAM_CMD;
+        gpu_write_start(RAM_CMD);
+        cp_send_cmd(CMD_DLSTART);
+    }
+
+    function cp_finish_cmd() {
+        gpu_write_end();
+        gpu_write_mem16(REG_CMD_WRITE, ram_ptr);
+    }
+
+    function cp_send_cmd(cmd) {
+        spi_write(cmd & 0xff);
+        spi_write((cmd >> 8) & 0xff);
+        spi_write((cmd >> 16) & 0xff);
+        spi_write((cmd >> 24) & 0xff);  
+        
+        ram_ptr += 4;
+    }
+    
+    function cp_cmd_memzero(addr, len) {
+        cp_send_cmd(CMD_MEMZERO);
+        cp_send_cmd(addr);
+        cp_send_cmd(len);
+    }
+
+    function cp_send_string(string) {
+        // For some reason it looks like we have to pad strings with actual bytes
+        local padding = "";
+        switch (string.len() % 4) {
+            case 1:
+                padding = "000";
+                break;
+            case 2:
+                padding = "00";
+                break;
+            case 3:
+                padding = "0";
+                break;
+        }
+        
+        foreach (char in (string + padding)) {
+            spi_write(char);
+            ram_ptr += 1;
+        }
+        
+        // 4 byte alignment
+        ram_ptr = (ram_ptr + 3) & 0xffffffc
+    }
+
+    function cp_cmd_text(x, y, font, options, string) {
+        cp_send_cmd(CMD_TEXT);
+        cp_send_cmd(((y << 16) | (x & 0xffff)));
+        cp_send_cmd(((options << 16) | font));
+        cp_send_string(string + "\0");
+    }
+    
+    function cp_cmd_number(x, y, font, options, n) {
+        cp_send_cmd(CMD_NUMBER);
+        cp_send_cmd(((y << 16) | (x & 0xffff)));
+        cp_send_cmd(((options << 16) | font));
+        cp_send_cmd(n);
+    }
+
+    function gpu_init() {
+        gpu_host_cmd(FT_GPU_EXTERNAL_OSC);
+        imp.sleep(0.2);
+        
+        gpu_host_cmd(FT_GPU_PLL_48M);
+        imp.sleep(0.2);
+        
+        gpu_host_cmd(FT_GPU_CORE_RESET);
+        gpu_host_cmd(FT_GPU_ACTIVE_M);
+        
+        while (1) {
+            local chip_id = gpu_read_mem(REG_ID, 1);
+            //server.log("waiting for GPU to boot: " + chip_id[0]);
+            if (chip_id[0] == 0x7C) {
+                server.log("GPU booted!");
+                break;
+            }
+        }
+    }
+
+    function gpu_config() {
+        gpu_write_mem16(REG_HCYCLE, FT_DispHCycle);
+        gpu_write_mem16(REG_HOFFSET, FT_DispHOffset);
+        gpu_write_mem16(REG_HSYNC0, FT_DispHSync0);
+        gpu_write_mem16(REG_HSYNC1, FT_DispHSync1);
+        gpu_write_mem16(REG_VCYCLE, FT_DispVCycle);
+        gpu_write_mem16(REG_VOFFSET, FT_DispVOffset);
+        gpu_write_mem16(REG_VSYNC0, FT_DispVSync0);
+        gpu_write_mem16(REG_VSYNC1, FT_DispVSync1);
+        gpu_write_mem8(REG_SWIZZLE, FT_DispSwizzle);
+        gpu_write_mem8(REG_PCLK_POL, FT_DispPCLKPol);
+        gpu_write_mem8(REG_PCLK, FT_DispPCLK);
+        gpu_write_mem16(REG_HSIZE, FT_DispWidth);
+        gpu_write_mem16(REG_VSIZE, FT_DispHeight);
+    
+        // This seems to control the audio
+        //gpu_write_mem8(REG_GPIO_DIR, 0x83); // | reg_gpio_dir[0].tointeger());
+        local reg_gpio = gpu_read_mem(REG_GPIO, 1);
+        gpu_write_mem8(REG_GPIO, 0x83 | reg_gpio[0].tointeger());
+        
+        // Touch configuration - configure the resistance value to 1200 - this value is specific to customer requirement and derived by experiment
+        gpu_write_mem16(REG_TOUCH_RZTHRESH, 1200);
+        
+        // enable touch interrupts (all sources enabled by default)
+        gpu_write_mem8(REG_INT_EN, 0x01);
+
+        // enable interrupts on touch events only
+        gpu_write_mem8(REG_INT_MASK, 0x02);
+        
+        // dummy read to clear the registers on boot
+        gpu_read_mem(REG_INT_FLAGS, 1);
+        
+        // Backlight - values are 0 - 128 (128 = max)
+        //gpu_write_mem8(REG_PWM_DUTY, 10);
+        
+        //server.log("wrote config");
+    }
 }
 
 const HSIZE = 128;
 const FLOAT_OFFSET = 100;
 class Heart {
+    ft800 = null;
     m = 0;
     w = HSIZE;
     W = HSIZE * 5;
     q = 0;
     time_to_reset = true;
     
-    function constructor() {
+    function constructor(_ft800) {
+        ft800 = _ft800;
         init();
     }
     
     function init() {
-        ram_ptr = RAM_DL;
-        gpu_write_start(RAM_DL);
-        gpu_write_ram32(clear_color_rgb(0, 0, 0));
-        gpu_write_ram32(clear(1,1,1));
-        gpu_write_ram32(0);
-        gpu_dlswap(DLSWAP_FRAME);
+        ft800.display_list([
+            ft800.clear_color_rgb(0, 0, 0),
+            ft800.clear(1,1,1),
+            0,
+        ]);
+
         
-        cp_dlstart_cmd();
-        cp_cmd_memzero(RAM_G, HSIZE * HSIZE * 2);
-        cp_cmd_memzero(RAM_G + (HSIZE * HSIZE * 2) + 100, HSIZE * HSIZE * 12);
-        cp_finish_cmd();
+        ft800.cp_dlstart_cmd();
+        ft800.cp_cmd_memzero(RAM_G, HSIZE * HSIZE * 2);
+        ft800.cp_cmd_memzero(RAM_G + (HSIZE * HSIZE * 2) + 100, HSIZE * HSIZE * 12);
+        ft800.cp_finish_cmd();
     }
 
     function reset() {
-        // For some reason simply memzeroing everything didn't work
-        gpu_power_down();
-        gpu_power_up();
-        gpu_init();
-        gpu_config();
+        ft800.gpu_power_down();
+        ft800.gpu_power_up();
+        ft800.gpu_init();
+        ft800.gpu_config();
         
         init();
         
@@ -606,20 +685,19 @@ class Heart {
     }
     
     function show_bitmap() {
-        ram_ptr = RAM_DL;
-        gpu_write_start(RAM_DL);
-        gpu_write_ram32(clear_color_rgb(0, 0, 0));
-        gpu_write_ram32(clear(1,1,1));
-        gpu_write_ram32(bitmap_source(RAM_G));
-        gpu_write_ram32(bitmap_layout(RGB565, HSIZE * 2, 96));
-        gpu_write_ram32(bitmap_transform_a(100));
-        gpu_write_ram32(bitmap_transform_e(100));
-        gpu_write_ram32(bitmap_size(BILINEAR, BORDER, BORDER, 320, 240));
-        gpu_write_ram32(begin(BITMAPS));
-        gpu_write_ram32(vertex2f(0,0));
-        gpu_write_ram32(end());
-        gpu_write_ram32(0);
-        gpu_dlswap(DLSWAP_FRAME);
+        ft800.display_list([
+            ft800.clear_color_rgb(0, 0, 0),
+            ft800.clear(1,1,1),
+            ft800.bitmap_source(RAM_G),
+            ft800.bitmap_layout(RGB565, HSIZE * 2, 96),
+            ft800.bitmap_transform_a(100),
+            ft800.bitmap_transform_e(100),
+            ft800.bitmap_size(BILINEAR, BORDER, BORDER, 320, 240),
+            ft800.begin(BITMAPS),
+            ft800.vertex2f(0,0),
+            ft800.end(),
+            0,
+        ]);
     }
     
     function collision(v, x, y){
@@ -643,11 +721,11 @@ class Heart {
     function write_float(n, v) {
         local fblob = blob(4);
         fblob.writen(v, 'f');
-        gpu_write_blob(RAM_G + (HSIZE * HSIZE * 2) + FLOAT_OFFSET + n, fblob);
+        ft800.gpu_write_blob(RAM_G + (HSIZE * HSIZE * 2) + FLOAT_OFFSET + n, fblob);
     }
     
     function read_float(n) {
-        local ret = gpu_read_mem(RAM_G + (HSIZE * HSIZE * 2) + FLOAT_OFFSET + n, 4);
+        local ret = ft800.gpu_read_mem(RAM_G + (HSIZE * HSIZE * 2) + FLOAT_OFFSET + n, 4);
         local fblob = blob(4);
         fblob[0] = ret[0];
         fblob[1] = ret[1];
@@ -675,7 +753,7 @@ class Heart {
 
         local color = (r << 11) | (g << 5) | b;
 
-        gpu_write_mem16(RAM_G + (x + y * w) * 2, color);
+        ft800.gpu_write_mem16(RAM_G + (x + y * w) * 2, color);
         show_bitmap();
     }
 
@@ -756,12 +834,12 @@ class Heart {
         set_pixel((x*w).tointeger(), (y*w).tointeger(), (rt/I).tointeger(), (gt/I).tointeger(), (bt/I).tointeger());
 
         if (m % 100 == 0) {
-            local now = date(time() - (8*60*60)).hour;
+            local day = date(time() - (8*60*60)).wday;
             
-            if (now == 7) {
+            if (day == 1) {
                 if (time_to_reset) {
                     time_to_reset = false;
-                    server.log("resetting at 7am");
+                    server.log("resetting on Monday");
                     reset();
                 }
             } else {
@@ -775,13 +853,13 @@ class Heart {
 
 
 /* Beginning of execution */
-cs_pin.write(1);
+imp.setpowersave(true);
 
-// Power cycle to be safe
-server.log("Power cycling");
-gpu_power_down();
-gpu_power_up();
-gpu_init();
-gpu_config();
+ft800 <- FT800({
+    spi     = hardware.spi189,
+    cs_pin  = hardware.pin7,
+    pd_pin  = hardware.pin2,
+    int_pin = hardware.pin5,
+});
 
-Heart().render();
+Heart(ft800).render();

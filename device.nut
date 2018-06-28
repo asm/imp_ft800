@@ -1,4 +1,4 @@
-/* Pin out -
+/* Pinout -
 Imp pin -> FT800 pin
       2 -> MISO
       5 -> SCLK
